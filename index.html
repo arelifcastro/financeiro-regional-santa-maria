@@ -1087,6 +1087,15 @@
                                                         );
                                                     })}
                                                 </tbody>
+                                                <tfoot>
+                                                    <tr className="bg-gray-100 font-bold">
+                                                        <td className="text-right pr-4">TOTAIS:</td>
+                                                        <td>{formatCurrency(calculateCongregationTotals(getCongregationFullData(selectedDetailCongregation)).anterior)}</td>
+                                                        <td className="text-green-700">{formatCurrency(calculateCongregationTotals(getCongregationFullData(selectedDetailCongregation)).entrada)}</td>
+                                                        <td className="text-red-700">{formatCurrency(calculateCongregationTotals(getCongregationFullData(selectedDetailCongregation)).saida)}</td>
+                                                        <td className="text-blue-800 text-lg">{formatCurrency(calculateCongregationTotals(getCongregationFullData(selectedDetailCongregation)).saldo)}</td>
+                                                    </tr>
+                                                </tfoot>
                                             </table>
                                         </div>
                                     </div>
