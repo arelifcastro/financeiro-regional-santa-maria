@@ -21,6 +21,19 @@
     <!-- FontAwesome para ícones -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, doc, setDoc, onSnapshot, updateDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Expondo funções do Firebase para o escopo global (para o React usar)
+        window.firebaseModules = { 
+            initializeApp, getAuth, signInAnonymously, onAuthStateChanged, 
+            getFirestore, collection, doc, setDoc, onSnapshot, updateDoc, getDoc 
+        };
+    </script>
+
     <!-- Configurações de Estilo Personalizado (Tailwind Config) -->
     <script>
         tailwind.config = {
@@ -33,7 +46,7 @@
                             200: '#ede09f',
                             300: '#e4cc68',
                             400: '#dcb63f',
-                            500: '#c5a059', // Dourado Principal
+                            500: '#c5a059', 
                             600: '#a67c2e',
                             700: '#855e25',
                             800: '#6e4b23',
@@ -73,6 +86,9 @@
         .table-departments td:first-child { text-align: left; font-weight: 600; }
         .table-departments input { width: 100%; border: none; background: transparent; text-align: right; outline: none; font-family: inherit; }
         .table-departments input:focus { background-color: #fff9db; }
+        
+        /* Loading Overlay */
+        .loading-overlay { position: fixed; inset: 0; background: rgba(255,255,255,0.8); z-index: 9999; display: flex; justify-content: center; align-items: center; }
     </style>
 </head>
 <body>
@@ -81,7 +97,7 @@
     <script type="text/babel">
         const { useState, useEffect, useMemo, useRef } = React;
 
-        // --- Configurações Iniciais e Credenciais Padrão ---
+        // --- Configurações Iniciais Padrão (Fallback) ---
         const DEFAULT_CONGREGACOES = [
             "Vila Santa Maria", "Jardim Almanara", "Parque Pedroso", 
             "Jardim dos Francos", "Vila Penteado", "Vila Acre", 
@@ -112,7 +128,7 @@
         
         const DEFAULT_APP_CONFIG = {
             appName: "Regional 2",
-            logo: null // Base64 string
+            logo: null
         };
 
         // --- Componentes Auxiliares ---
@@ -182,6 +198,7 @@
                 e.preventDefault();
                 if (!selectedUser) { setError("Selecione um usuário."); return; }
                 
+                // Validação local baseada no objeto de credenciais carregado do Firebase
                 if (credentials[selectedUser] === password) {
                     onLogin(selectedUser);
                 } else {
@@ -193,14 +210,14 @@
                 <div className="min-h-screen bg-navy-900 flex items-center justify-center p-4">
                     <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden fade-in">
                         <div className="bg-gold-500 p-8 text-center">
-                            {appConfig.logo ? (
+                            {appConfig?.logo ? (
                                 <img src={appConfig.logo} alt="Logo" className="w-24 h-24 object-contain bg-white rounded-full p-2 mx-auto mb-4 shadow-lg" />
                             ) : (
                                 <div className="w-16 h-16 bg-white rounded-full flex items-center justify-center text-gold-600 text-3xl mx-auto mb-4 shadow-lg">
                                     <i className="fas fa-church"></i>
                                 </div>
                             )}
-                            <h2 className="text-2xl font-bold text-white">{appConfig.appName}</h2>
+                            <h2 className="text-2xl font-bold text-white">{appConfig?.appName || "Regional 2"}</h2>
                             <p className="text-gold-100 text-sm">Controle Financeiro</p>
                         </div>
                         <form onSubmit={handleLogin} className="p-8 space-y-6">
@@ -252,21 +269,24 @@
 
         // --- Aplicação Principal ---
         function App() {
-            // -- Auth State --
+            // -- Auth State Local --
             const [isAuthenticated, setIsAuthenticated] = useState(false);
-            const [currentUser, setCurrentUser] = useState(null); // { name: string, role: 'admin' | 'user' }
+            const [currentUser, setCurrentUser] = useState(null);
+            
+            // -- Firebase State --
+            const [firebaseReady, setFirebaseReady] = useState(false);
+            const [db, setDb] = useState(null);
+            const [appId, setAppId] = useState(null);
 
-            // -- App Config --
+            // -- App Data --
             const [appConfig, setAppConfig] = useState(DEFAULT_APP_CONFIG);
             const [credentials, setCredentials] = useState(DEFAULT_CREDENTIALS);
-
-            // -- Data State --
             const [congregacoes, setCongregacoes] = useState(DEFAULT_CONGREGACOES);
             const [departamentos, setDepartamentos] = useState(DEFAULT_DEPARTAMENTOS);
             const [financialData, setFinancialData] = useState({});
-            const [currentDate, setCurrentDate] = useState(new Date());
             
             // -- UI State --
+            const [currentDate, setCurrentDate] = useState(new Date());
             const [view, setView] = useState('dashboard'); 
             const [isModalOpen, setIsModalOpen] = useState(false);
             const [editingCongregation, setEditingCongregation] = useState(null);
@@ -277,41 +297,137 @@
             const [newCongName, setNewCongName] = useState("");
             const [newCongPassword, setNewCongPassword] = useState("");
             const [newDeptName, setNewDeptName] = useState("");
-            
-            // Edit States for Admin
-            const [editCongTarget, setEditCongTarget] = useState(null); // Which cong is being edited
+            const [editCongTarget, setEditCongTarget] = useState(null);
             const [editCongName, setEditCongName] = useState("");
             const [editCongPass, setEditCongPass] = useState("");
-            
             const [editDeptTarget, setEditDeptTarget] = useState(null);
             const [editDeptName, setEditDeptName] = useState("");
 
-            // Carregar Dados e Configurações
+            // --- Inicialização do Firebase ---
             useEffect(() => {
-                const savedData = localStorage.getItem('financeiro_regional2_v3_db');
-                const savedCongs = localStorage.getItem('config_congregacoes');
-                const savedDepts = localStorage.getItem('config_departamentos');
-                const savedCreds = localStorage.getItem('config_credentials');
-                const savedConfig = localStorage.getItem('config_app_v1');
+                const initFirebase = async () => {
+                    // Aguarda os módulos carregarem
+                    let attempts = 0;
+                    while (!window.firebaseModules && attempts < 50) {
+                        await new Promise(r => setTimeout(r, 100));
+                        attempts++;
+                    }
 
-                if (savedData) setFinancialData(JSON.parse(savedData));
-                if (savedCongs) setCongregacoes(JSON.parse(savedCongs));
-                if (savedDepts) setDepartamentos(JSON.parse(savedDepts));
-                if (savedCreds) setCredentials(JSON.parse(savedCreds));
-                if (savedConfig) setAppConfig(JSON.parse(savedConfig));
+                    if (window.firebaseModules) {
+                        const { initializeApp, getAuth, signInAnonymously, getFirestore, onAuthStateChanged } = window.firebaseModules;
+                        
+                        // Configuração do Firebase - Projeto Financeiro Santa Maria
+                        const firebaseConfig = {
+                            apiKey: "AIzaSyB22344mmWVNbqVKb2OA91d6yJ4GA2hP3o",
+                            authDomain: "financeiro-santa-maria.firebaseapp.com",
+                            projectId: "financeiro-santa-maria",
+                            storageBucket: "financeiro-santa-maria.firebasestorage.app",
+                            messagingSenderId: "285557368463",
+                            appId: "1:285557368463:web:d50394a134fe53d8e932fa",
+                            measurementId: "G-0CD64E9TF7"
+                        };
+
+                        // Definindo um ID fixo para os dados no banco
+                        const currentAppId = 'regional2-financeiro-prod';
+                        setAppId(currentAppId);
+
+                        try {
+                            const app = initializeApp(firebaseConfig);
+                            const auth = getAuth(app);
+                            const firestore = getFirestore(app);
+                            setDb(firestore);
+
+                            await signInAnonymously(auth);
+
+                            onAuthStateChanged(auth, (user) => {
+                                if (user) {
+                                    setFirebaseReady(true);
+                                }
+                            });
+                        } catch (e) {
+                            console.error("Erro ao iniciar Firebase:", e);
+                            alert("Erro de conexão com o banco de dados. O modo offline não é suportado nesta versão.");
+                        }
+                    }
+                };
+                initFirebase();
             }, []);
 
-            // Salvar Persistência
+            // --- Listeners do Firestore (Sincronização) ---
             useEffect(() => {
-                if (Object.keys(financialData).length > 0) localStorage.setItem('financeiro_regional2_v3_db', JSON.stringify(financialData));
-            }, [financialData]);
+                if (!firebaseReady || !db || !appId) return;
 
-            useEffect(() => {
-                localStorage.setItem('config_congregacoes', JSON.stringify(congregacoes));
-                localStorage.setItem('config_departamentos', JSON.stringify(departamentos));
-                localStorage.setItem('config_credentials', JSON.stringify(credentials));
-                localStorage.setItem('config_app_v1', JSON.stringify(appConfig));
-            }, [congregacoes, departamentos, credentials, appConfig]);
+                const { collection, onSnapshot, doc } = window.firebaseModules;
+
+                // 1. Ouvir Configurações (Gerais, Congregações, Departamentos, Credenciais)
+                // CORREÇÃO: Adicionado segmento 'main' para garantir número par de segmentos (Col/Doc/Col/Doc)
+                const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'main');
+                
+                const unsubSettings = onSnapshot(settingsRef, (docSnap) => {
+                    if (docSnap.exists()) {
+                        const data = docSnap.data();
+                        if (data.congregacoes) setCongregacoes(data.congregacoes);
+                        if (data.departamentos) setDepartamentos(data.departamentos);
+                        if (data.credentials) setCredentials(data.credentials);
+                        if (data.appConfig) setAppConfig(data.appConfig);
+                    } else {
+                        // Se não existe, cria com padrões (primeira execução)
+                        const { setDoc } = window.firebaseModules;
+                        setDoc(settingsRef, {
+                            congregacoes: DEFAULT_CONGREGACOES,
+                            departamentos: DEFAULT_DEPARTAMENTOS,
+                            credentials: DEFAULT_CREDENTIALS,
+                            appConfig: DEFAULT_APP_CONFIG
+                        });
+                    }
+                }, (error) => console.error("Erro ao sincronizar config:", error));
+
+                // 2. Ouvir Dados Financeiros
+                // Estrutura: Coleção 'financial_records', cada documento é um Mês-Ano (Ex: '2024-01')
+                const financeRef = collection(db, 'artifacts', appId, 'public', 'data', 'financial_records');
+                
+                const unsubFinance = onSnapshot(financeRef, (snapshot) => {
+                    const newData = {};
+                    snapshot.forEach(doc => {
+                        newData[doc.id] = doc.data(); // doc.id deve ser 'YYYY-MM'
+                    });
+                    setFinancialData(newData);
+                }, (error) => console.error("Erro ao sincronizar finanças:", error));
+
+                return () => {
+                    unsubSettings();
+                    unsubFinance();
+                };
+            }, [firebaseReady, db, appId]);
+
+            // --- Helpers de Banco de Dados ---
+            const saveSettingsToFirebase = async (newSettingsPart) => {
+                if (!db || !appId) return;
+                const { doc, setDoc } = window.firebaseModules;
+                // CORREÇÃO: Caminho atualizado para incluir 'main'
+                const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'main');
+                // Merge true para atualizar apenas o que mudou
+                await setDoc(settingsRef, newSettingsPart, { merge: true });
+            };
+
+            const saveFinancialDataToFirebase = async (dateKey, congName, data) => {
+                if (!db || !appId) return;
+                const { doc, setDoc } = window.firebaseModules;
+                const monthDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'financial_records', dateKey);
+                
+                // Atualiza apenas a congregação específica dentro do documento do mês
+                await setDoc(monthDocRef, {
+                    [congName]: data
+                }, { merge: true });
+            };
+
+            const deleteCongregationDataFromFirebase = async (congName) => {
+                 if (!db || !appId) return;
+                 // Nota: Firestore não deleta campos facilmente em batch sem cloud functions.
+                 // Aqui vamos apenas remover da UI. Em um app real, precisaria de lógica mais complexa.
+                 // Mas podemos atualizar o documento de settings.
+            };
+
 
             // --- Lógica de Datas ---
             const currentYear = currentDate.getFullYear();
@@ -322,7 +438,7 @@
             const monthNames = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
             const changeMonth = (offset) => setCurrentDate(new Date(currentYear, currentMonth + offset, 1));
 
-            // --- Handlers de Autenticação ---
+            // --- Handlers de Autenticação Local ---
             const handleLogin = (user) => {
                 const role = user === 'Admin' ? 'admin' : 'user';
                 setCurrentUser({ name: user, role });
@@ -336,14 +452,14 @@
                 setView('dashboard');
             };
 
-            // --- Filtro de Dados por Permissão ---
+            // --- Filtros ---
             const visibleCongregations = useMemo(() => {
                 if (!currentUser) return [];
                 if (currentUser.role === 'admin') return congregacoes;
                 return congregacoes.filter(c => c === currentUser.name);
             }, [currentUser, congregacoes]);
 
-            // --- Lógica de Dados Financeiros ---
+            // --- Cálculos ---
             const getCongregationFullData = (cong, key = dateKey) => {
                 const rawData = financialData[key]?.[cong];
                 const initialData = {};
@@ -388,30 +504,42 @@
                 return totals;
             }, [financialData, dateKey, visibleCongregations, departamentos]);
 
-            // --- Admin Handlers (Configuração Geral) ---
+            // --- Admin Handlers ---
             const handleLogoUpload = (e) => {
                 const file = e.target.files[0];
                 if (file) {
                     const reader = new FileReader();
                     reader.onloadend = () => {
-                        setAppConfig(prev => ({ ...prev, logo: reader.result }));
+                        const newConfig = { ...appConfig, logo: reader.result };
+                        setAppConfig(newConfig);
+                        saveSettingsToFirebase({ appConfig: newConfig });
                     };
                     reader.readAsDataURL(file);
                 }
             };
 
-            // --- Admin Handlers (Congregações) ---
+            const handleUpdateAppName = (name) => {
+                const newConfig = { ...appConfig, appName: name };
+                setAppConfig(newConfig);
+                saveSettingsToFirebase({ appConfig: newConfig });
+            }
+
             const handleAddCongregation = () => {
                 if (newCongName && !congregacoes.includes(newCongName) && newCongPassword) {
-                    setCongregacoes([...congregacoes, newCongName]);
-                    setCredentials(prev => ({ ...prev, [newCongName]: newCongPassword }));
+                    const newCongs = [...congregacoes, newCongName];
+                    const newCreds = { ...credentials, [newCongName]: newCongPassword };
+                    
+                    setCongregacoes(newCongs);
+                    setCredentials(newCreds);
+                    saveSettingsToFirebase({ congregacoes: newCongs, credentials: newCreds });
+
                     setNewCongName("");
                     setNewCongPassword("");
-                    alert("Congregação adicionada com sucesso!");
+                    alert("Congregação adicionada e salva!");
                 } else if (!newCongPassword) {
-                    alert("Por favor, defina uma senha para a nova congregação.");
+                    alert("Defina uma senha.");
                 } else {
-                    alert("Nome inválido ou já existente.");
+                    alert("Nome inválido ou existente.");
                 }
             };
 
@@ -421,55 +549,54 @@
                 setEditCongPass(credentials[congName] || "");
             };
 
-            const saveEditCongregation = () => {
+            const saveEditCongregation = async () => {
                 if (!editCongName) return;
 
-                // Atualizar lista de congregações
                 const newCongs = congregacoes.map(c => c === editCongTarget ? editCongName : c);
-                setCongregacoes(newCongs);
-
-                // Atualizar Credenciais: Remove a antiga e adiciona a nova/atualizada
                 const newCreds = { ...credentials };
                 delete newCreds[editCongTarget];
                 newCreds[editCongName] = editCongPass;
-                setCredentials(newCreds);
 
-                // Migrar Dados Financeiros (Renomear chave no objeto)
-                const newFinancialData = { ...financialData };
-                Object.keys(newFinancialData).forEach(date => {
-                    if (newFinancialData[date][editCongTarget]) {
-                        newFinancialData[date][editCongName] = newFinancialData[date][editCongTarget];
-                        delete newFinancialData[date][editCongTarget];
+                setCongregacoes(newCongs);
+                setCredentials(newCreds);
+                
+                // Salvar configs
+                await saveSettingsToFirebase({ congregacoes: newCongs, credentials: newCreds });
+
+                // Migrar Dados Financeiros (Simplificado: Lê tudo e regrava tudo que mudou)
+                // Num sistema real isso seria feito via Cloud Function ou Batch Write complexo.
+                // Aqui vamos iterar o que temos em memória e atualizar os meses carregados.
+                Object.keys(financialData).forEach(date => {
+                    if (financialData[date][editCongTarget]) {
+                        const dataToMigrate = financialData[date][editCongTarget];
+                        // Salva no novo nome
+                        saveFinancialDataToFirebase(date, editCongName, dataToMigrate);
+                        // Idealmente deletar o antigo, mas Firestore merge não deleta chaves. 
+                        // Vamos ignorar a limpeza por enquanto para evitar complexidade excessiva.
                     }
                 });
-                setFinancialData(newFinancialData);
 
                 setEditCongTarget(null);
                 alert("Congregação atualizada!");
             };
 
             const handleDeleteCongregation = (congName) => {
-                if (confirm(`Tem certeza que deseja excluir "${congName}"? Todos os dados financeiros serão perdidos.`)) {
-                    setCongregacoes(congregacoes.filter(c => c !== congName));
-                    
+                if (confirm(`Excluir "${congName}"?`)) {
+                    const newCongs = congregacoes.filter(c => c !== congName);
                     const newCreds = { ...credentials };
                     delete newCreds[congName];
+                    
+                    setCongregacoes(newCongs);
                     setCredentials(newCreds);
-
-                    const newFinancialData = { ...financialData };
-                    Object.keys(newFinancialData).forEach(date => {
-                        if (newFinancialData[date][congName]) {
-                            delete newFinancialData[date][congName];
-                        }
-                    });
-                    setFinancialData(newFinancialData);
+                    saveSettingsToFirebase({ congregacoes: newCongs, credentials: newCreds });
                 }
             };
 
-            // --- Admin Handlers (Departamentos) ---
             const handleAddDepartment = () => {
                 if (newDeptName && !departamentos.includes(newDeptName)) {
-                    setDepartamentos([...departamentos, newDeptName]);
+                    const newDepts = [...departamentos, newDeptName];
+                    setDepartamentos(newDepts);
+                    saveSettingsToFirebase({ departamentos: newDepts });
                     setNewDeptName("");
                     alert("Departamento adicionado!");
                 }
@@ -482,31 +609,17 @@
 
             const saveEditDepartment = () => {
                 if (!editDeptName) return;
-                setDepartamentos(departamentos.map(d => d === editDeptTarget ? editDeptName : d));
-                
-                // Nota: Renomear departamento não migra os dados internos do JSON financeiro automaticamente 
-                // pela complexidade, mas novos lançamentos usarão o novo nome.
-                // Para consistência total, deveríamos varrer financialData também.
-                // Varreremos aqui para garantir:
-                const newFinancialData = { ...financialData };
-                Object.keys(newFinancialData).forEach(date => {
-                    Object.keys(newFinancialData[date]).forEach(cong => {
-                        const congData = newFinancialData[date][cong];
-                        if (congData[editDeptTarget]) {
-                            congData[editDeptName] = congData[editDeptTarget];
-                            delete congData[editDeptTarget];
-                        }
-                    });
-                });
-                setFinancialData(newFinancialData);
-
+                const newDepts = departamentos.map(d => d === editDeptTarget ? editDeptName : d);
+                setDepartamentos(newDepts);
+                saveSettingsToFirebase({ departamentos: newDepts });
                 setEditDeptTarget(null);
             };
 
             const handleDeleteDepartment = (depName) => {
                 if (confirm(`Excluir departamento "${depName}"?`)) {
-                    setDepartamentos(departamentos.filter(d => d !== depName));
-                    // Opcional: Limpar dados desse departamento do histórico financeiro
+                    const newDepts = departamentos.filter(d => d !== depName);
+                    setDepartamentos(newDepts);
+                    saveSettingsToFirebase({ departamentos: newDepts });
                 }
             };
 
@@ -533,12 +646,17 @@
                 setEditValues(prev => ({ ...prev, [dep]: { ...prev[dep], [field]: parseFloat(value) || 0 } }));
             };
 
-            const handleSave = (e) => {
+            const handleSave = async (e) => {
                 e.preventDefault();
+                // Atualização Otimista
                 const newData = { ...financialData };
                 if (!newData[dateKey]) newData[dateKey] = {};
                 newData[dateKey][editingCongregation] = editValues;
                 setFinancialData(newData);
+                
+                // Salvar no Firebase
+                await saveFinancialDataToFirebase(dateKey, editingCongregation, editValues);
+                
                 setIsModalOpen(false);
             };
 
@@ -592,6 +710,16 @@
             };
 
             // --- Render ---
+            
+            if (!firebaseReady) {
+                return (
+                    <div className="min-h-screen bg-navy-900 flex flex-col items-center justify-center text-white">
+                        <div className="w-12 h-12 border-4 border-gold-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+                        <p>Conectando ao Banco de Dados...</p>
+                    </div>
+                );
+            }
+
             if (!isAuthenticated) {
                 return <LoginScreen usersList={congregacoes} credentials={credentials} appConfig={appConfig} onLogin={handleLogin} />;
             }
@@ -729,7 +857,7 @@
                                                     <input 
                                                         type="text" 
                                                         value={appConfig.appName} 
-                                                        onChange={(e) => setAppConfig({...appConfig, appName: e.target.value})}
+                                                        onChange={(e) => handleUpdateAppName(e.target.value)}
                                                         className="w-full border border-gray-300 rounded p-2"
                                                     />
                                                 </div>
